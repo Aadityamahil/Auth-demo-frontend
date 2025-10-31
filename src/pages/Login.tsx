@@ -2,26 +2,11 @@ import React, { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
+import FingerprintJS from '@fingerprintjs/fingerprintjs'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
 
-async function getDeviceIdRaw(): Promise<string> {
-  const hardwareConcurrency = (navigator as any).hardwareConcurrency || ''
-  const deviceMemory = (navigator as any).deviceMemory || ''
-  const languages = Array.isArray(navigator.languages) ? navigator.languages.join(',') : ''
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
-  const screenInfo = [screen.width, screen.height, screen.colorDepth].join('x')
-  const parts = [
-    navigator.platform,
-    navigator.language,
-    languages,
-    String(hardwareConcurrency),
-    String(deviceMemory),
-    screenInfo,
-    timeZone,
-  ]
-  return parts.join('::')
-}
+const fpPromise = FingerprintJS.load()
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -33,11 +18,17 @@ export default function Login() {
     e.preventDefault()
     setLoading(true)
     try {
-      const deviceIdRaw = await getDeviceIdRaw()
+      const fp = await fpPromise
+      const result = await fp.get()
+      const visitorId = result.visitorId
+
       const { data } = await axios.post(
         `${API_BASE}/auth/login`,
-        { email, password, deviceIdRaw },
-        { withCredentials: true }
+        { email, password },
+        {
+          withCredentials: true,
+          headers: { 'x-fp-visitor-id': visitorId },
+        }
       )
       toast.success('Logged in')
       sessionStorage.setItem('deviceIdHash', data.deviceIdHash)
