@@ -14,6 +14,125 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
+  // base64url helpers
+  const bufToBase64url = (buf: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buf)
+    let str = ''
+    for (let i = 0; i < bytes.byteLength; i++) str += String.fromCharCode(bytes[i])
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  }
+  const base64urlToBuf = (b64url: string): ArrayBuffer => {
+    const pad = '='.repeat((4 - (b64url.length % 4)) % 4)
+    const b64 = (b64url + pad).replace(/-/g, '+').replace(/_/g, '/')
+    const str = atob(b64)
+    const buf = new ArrayBuffer(str.length)
+    const bytes = new Uint8Array(buf)
+    for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i)
+    return buf
+  }
+
+  const registerPasskey = async () => {
+    try {
+      if (!email) return toast.error('Enter email')
+      // 1) Get registration options
+      const { data: options } = await axios.post(
+        `${API_BASE}/webauthn/register/start`,
+        { email },
+        { withCredentials: true }
+      )
+
+      // Convert challenge and user.id to ArrayBuffer
+      options.challenge = base64urlToBuf(options.challenge)
+      if (options.user && options.user.id) options.user.id = base64urlToBuf(options.user.id)
+      if (Array.isArray(options.excludeCredentials)) {
+        options.excludeCredentials = options.excludeCredentials.map((cred: any) => ({
+          ...cred,
+          id: typeof cred.id === 'string' ? base64urlToBuf(cred.id) : cred.id,
+        }))
+      }
+
+      // 2) Create credential
+      const cred = (await navigator.credentials.create({ publicKey: options })) as PublicKeyCredential
+      const attObj = (cred.response as AuthenticatorAttestationResponse).attestationObject
+      const clientDataJSON = cred.response.clientDataJSON
+
+      const attestationResponse = {
+        id: cred.id,
+        rawId: bufToBase64url(cred.rawId),
+        type: cred.type,
+        response: {
+          attestationObject: bufToBase64url(attObj),
+          clientDataJSON: bufToBase64url(clientDataJSON),
+          transports: (cred as any).response.getTransports?.() || [],
+        },
+      }
+
+      // 3) Send to server for verification & storage
+      await axios.post(
+        `${API_BASE}/webauthn/register/finish`,
+        { email, attestationResponse },
+        { withCredentials: true }
+      )
+      toast.success('Passkey registered for this device')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Passkey registration failed')
+    }
+  }
+
+  const loginWithPasskey = async () => {
+    setLoading(true)
+    try {
+      if (!email) return toast.error('Enter email')
+      // 1) Get auth options
+      const { data: options } = await axios.post(
+        `${API_BASE}/webauthn/login/start`,
+        { email },
+        { withCredentials: true }
+      )
+
+      options.challenge = base64urlToBuf(options.challenge)
+      if (Array.isArray(options.allowCredentials)) {
+        options.allowCredentials = options.allowCredentials.map((cred: any) => ({
+          ...cred,
+          id: typeof cred.id === 'string' ? base64urlToBuf(cred.id) : cred.id,
+        }))
+      }
+
+      // 2) Get assertion
+      const assertion = (await navigator.credentials.get({ publicKey: options })) as PublicKeyCredential
+      const authResp = assertion.response as AuthenticatorAssertionResponse
+
+      const assertionResponse = {
+        id: assertion.id,
+        type: assertion.type,
+        rawId: bufToBase64url(assertion.rawId),
+        response: {
+          authenticatorData: bufToBase64url(authResp.authenticatorData),
+          clientDataJSON: bufToBase64url(authResp.clientDataJSON),
+          signature: bufToBase64url(authResp.signature),
+          userHandle: authResp.userHandle ? bufToBase64url(authResp.userHandle) : null,
+        },
+      }
+
+      const { data } = await axios.post(
+        `${API_BASE}/webauthn/login/finish`,
+        { email, assertionResponse },
+        { withCredentials: true }
+      )
+
+      if (data?.verified) {
+        toast.success('Device login successful')
+        navigate('/dashboard')
+      } else {
+        toast.error('Device login failed')
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Device login failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
@@ -79,6 +198,14 @@ export default function Login() {
             {loading ? 'Signing in…' : 'Login'}
           </button>
         </form>
+        <div className="mt-3 space-y-2">
+          <button onClick={registerPasskey} className="btn w-full" disabled={loading}>
+            Register device (passkey)
+          </button>
+          <button onClick={loginWithPasskey} className="btn w-full" disabled={loading}>
+            Login with device (passkey)
+          </button>
+        </div>
         <button onClick={onRegister} className="mt-3 text-sm text-blue-600 hover:underline">
           Register a demo account
         </button>
