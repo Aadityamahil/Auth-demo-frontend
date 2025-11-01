@@ -8,6 +8,53 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
 
 const fpPromise = FingerprintJS.load()
 
+// Fallback device ID generator if FingerprintJS fails
+const generateFallbackDeviceId = (): string => {
+  // Combine user agent, screen dimensions, timezone, and language
+  const components = [
+    navigator.userAgent,
+    `${screen.width}x${screen.height}`,
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    navigator.language,
+    navigator.hardwareConcurrency || 'unknown',
+  ].join('|')
+  
+  // Simple hash function (not cryptographically secure, but sufficient for device binding)
+  let hash = 0
+  for (let i = 0; i < components.length; i++) {
+    const char = components.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash // Convert to 32-bit integer
+  }
+  
+  return `fallback-${Math.abs(hash).toString(16)}-${Date.now().toString(36)}`
+}
+
+// Get device fingerprint with timeout and fallback
+const getDeviceFingerprint = async (timeout = 3000): Promise<string> => {
+  try {
+    // Race between FingerprintJS and timeout
+    const fingerprintPromise = fpPromise.then(fp => fp.get()).then(result => result.visitorId)
+    const timeoutPromise = new Promise<string>((_, reject) => 
+      setTimeout(() => reject(new Error('FingerprintJS timeout')), timeout)
+    )
+    
+    const visitorId = await Promise.race([fingerprintPromise, timeoutPromise])
+    
+    if (visitorId && typeof visitorId === 'string' && visitorId.length > 0) {
+      console.log('[WEBAUTHN] Device fingerprint from FingerprintJS:', visitorId.substring(0, 20) + '...')
+      return visitorId
+    }
+    
+    throw new Error('FingerprintJS returned empty visitorId')
+  } catch (error) {
+    console.warn('[WEBAUTHN] FingerprintJS failed or timed out, using fallback:', error)
+    const fallbackId = generateFallbackDeviceId()
+    console.log('[WEBAUTHN] Using fallback device ID:', fallbackId.substring(0, 20) + '...')
+    return fallbackId
+  }
+}
+
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -47,29 +94,20 @@ export default function Login() {
       }
 
       // Safari on iOS requires user interaction context
-      // Get device fingerprint for device binding
-      let visitorId;
-      try {
-        const fp = await fpPromise
-        const result = await fp.get()
-        visitorId = result.visitorId
-        console.log('[WEBAUTHN] registerPasskey - FingerprintJS visitorId:', visitorId ? `${visitorId.substring(0, 20)}...` : 'MISSING')
-        
-        if (!visitorId) {
-          console.warn('[WEBAUTHN] registerPasskey - No visitorId from FingerprintJS, continuing without device binding')
-        }
-      } catch (fpError) {
-        console.error('[WEBAUTHN] registerPasskey - FingerprintJS error:', fpError)
-        // Continue without device fingerprint (will log warning in backend)
-      }
+      // Get device fingerprint for device binding (with fallback)
+      const visitorId = await getDeviceFingerprint(3000) // 3 second timeout
+      const regFinalVisitorId = visitorId || generateFallbackDeviceId() // Ensure we always have one
 
       // 1) Get registration options
+      const registerStartHeaders: Record<string, string> = {}
+      registerStartHeaders['x-fp-visitor-id'] = regFinalVisitorId
+      
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/register/start`,
         { email },
         { 
           withCredentials: true,
-          headers: { 'x-fp-visitor-id': visitorId },
+          headers: registerStartHeaders,
         }
       )
 
@@ -126,14 +164,26 @@ export default function Login() {
       }
 
       // 3) Send to server for verification & storage (include device fingerprint)
-      const registerFinishHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (visitorId) {
-        registerFinishHeaders['x-fp-visitor-id'] = visitorId
+      // Use the visitorId we got at the start
+      const registerFinishHeaders: Record<string, string> = {}
+      registerFinishHeaders['x-fp-visitor-id'] = regFinalVisitorId
+      
+      const requestBody = {
+        email,
+        attestationResponse,
+        fpVisitorId: regFinalVisitorId,
       }
+      
+      console.log('[WEBAUTHN] registerPasskey - Sending request:', {
+        hasVisitorId: !!regFinalVisitorId,
+        visitorIdPreview: regFinalVisitorId ? `${regFinalVisitorId.substring(0, 30)}...` : 'MISSING',
+        bodyKeys: Object.keys(requestBody),
+        headerKeys: Object.keys(registerFinishHeaders),
+      })
       
       await axios.post(
         `${API_BASE}/webauthn/register/finish`,
-        { email, attestationResponse, fpVisitorId: visitorId },
+        requestBody,
         { 
           withCredentials: true,
           headers: registerFinishHeaders,
@@ -172,27 +222,13 @@ export default function Login() {
     try {
       if (!email) return toast.error('Enter email')
 
-      // Get device fingerprint for device binding
-      let visitorId;
-      try {
-        const fp = await fpPromise
-        const result = await fp.get()
-        visitorId = result.visitorId
-        console.log('[WEBAUTHN] loginWithPasskey - FingerprintJS visitorId:', visitorId ? `${visitorId.substring(0, 20)}...` : 'MISSING')
-        
-        if (!visitorId) {
-          console.warn('[WEBAUTHN] loginWithPasskey - No visitorId from FingerprintJS, continuing without device binding')
-        }
-      } catch (fpError) {
-        console.error('[WEBAUTHN] loginWithPasskey - FingerprintJS error:', fpError)
-        // Continue without device fingerprint (will log warning in backend)
-      }
+      // Get device fingerprint for device binding (with fallback)
+      const visitorId = await getDeviceFingerprint(3000) // 3 second timeout
+      const loginFinalVisitorId = visitorId || generateFallbackDeviceId() // Ensure we always have one
 
       // 1) Get auth options
-      const loginStartHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (visitorId) {
-        loginStartHeaders['x-fp-visitor-id'] = visitorId
-      }
+      const loginStartHeaders: Record<string, string> = {}
+      loginStartHeaders['x-fp-visitor-id'] = loginFinalVisitorId
       
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/login/start`,
@@ -227,14 +263,26 @@ export default function Login() {
         },
       }
 
-      const loginFinishHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (visitorId) {
-        loginFinishHeaders['x-fp-visitor-id'] = visitorId
+      // Use the visitorId we got at the start
+      const loginFinishHeaders: Record<string, string> = {}
+      loginFinishHeaders['x-fp-visitor-id'] = loginFinalVisitorId
+      
+      const requestBody = {
+        email,
+        assertionResponse,
+        fpVisitorId: loginFinalVisitorId,
       }
+      
+      console.log('[WEBAUTHN] loginWithPasskey - Sending request:', {
+        hasVisitorId: !!loginFinalVisitorId,
+        visitorIdPreview: loginFinalVisitorId ? `${loginFinalVisitorId.substring(0, 30)}...` : 'MISSING',
+        bodyKeys: Object.keys(requestBody),
+        headerKeys: Object.keys(loginFinishHeaders),
+      })
       
       const { data } = await axios.post(
         `${API_BASE}/webauthn/login/finish`,
-        { email, assertionResponse, fpVisitorId: visitorId },
+        requestBody,
         { 
           withCredentials: true,
           headers: loginFinishHeaders,
