@@ -11,18 +11,42 @@ const fpPromise = FingerprintJS.load()
 // Device ID generator (device-specific, not browser-specific)
 // Uses characteristics that are the same across browsers on the same device
 const generateDeviceId = (): string => {
+  // Get stable values that are the same across browsers
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale || navigator.language || 'en'
+  const language = navigator.language || 'en'
+  const platform = navigator.platform || (navigator as any).userAgentData?.platform || 'unknown'
+  const hardwareConcurrency = String(navigator.hardwareConcurrency || 0)
+  const maxTouchPoints = String(navigator.maxTouchPoints || 0)
+  
+  // Use availWidth/availHeight instead of width/height for consistency
+  // Also normalize to reduce window size variations
+  const screenWidth = Math.floor((screen.availWidth || screen.width || 0) / 100) * 100
+  const screenHeight = Math.floor((screen.availHeight || screen.height || 0) / 100) * 100
+  const colorDepth = screen.colorDepth || 24
+  const pixelDepth = screen.pixelDepth || screen.colorDepth || 24
+  
   // Device-specific components (same across browsers on the same device):
+  // Normalize all values to strings for consistent hashing
   const components = [
-    `${screen.width}x${screen.height}x${screen.colorDepth}`, // Screen specs (device-specific)
-    Intl.DateTimeFormat().resolvedOptions().timeZone, // Timezone (device-specific)
-    Intl.DateTimeFormat().resolvedOptions().locale, // Locale (device-specific)
-    navigator.language, // Language (device-specific)
-    navigator.hardwareConcurrency || 'unknown', // CPU cores (device-specific)
-    navigator.platform || 'unknown', // Platform (OS) (device-specific)
-    navigator.maxTouchPoints || 0, // Touch support (device-specific)
-    screen.pixelDepth || screen.colorDepth, // Color depth (device-specific)
+    `screen:${screenWidth}x${screenHeight}x${colorDepth}x${pixelDepth}`, // Normalized screen specs
+    `tz:${timezone}`, // Timezone
+    `loc:${locale}`, // Locale
+    `lang:${language}`, // Language
+    `cpu:${hardwareConcurrency}`, // CPU cores
+    `platform:${platform.toLowerCase()}`, // Platform (normalized to lowercase)
+    `touch:${maxTouchPoints}`, // Touch support
     // Note: We explicitly EXCLUDE userAgent because it's browser-specific
   ].join('|')
+  
+  // Log the components for debugging (will help identify what's different)
+  console.log('[WEBAUTHN] Device ID components:', {
+    components: components.split('|'),
+    screenWidth,
+    screenHeight,
+    timezone,
+    platform: platform.toLowerCase(),
+  })
   
   // Stable hash function (same input = same output, no time-based randomness)
   let hash = 0
@@ -33,7 +57,9 @@ const generateDeviceId = (): string => {
   }
   
   // No Date.now() - we want the same device to always get the same ID
-  return `device-${Math.abs(hash).toString(16)}`
+  const deviceId = `device-${Math.abs(hash).toString(16)}`
+  console.log('[WEBAUTHN] Generated device ID:', deviceId)
+  return deviceId
 }
 
 // Get device fingerprint (device-specific, works across browsers)
