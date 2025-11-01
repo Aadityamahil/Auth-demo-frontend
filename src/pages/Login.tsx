@@ -47,11 +47,19 @@ export default function Login() {
       }
 
       // Safari on iOS requires user interaction context
+      // Get device fingerprint for device binding
+      const fp = await fpPromise
+      const result = await fp.get()
+      const visitorId = result.visitorId
+
       // 1) Get registration options
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/register/start`,
         { email },
-        { withCredentials: true }
+        { 
+          withCredentials: true,
+          headers: { 'x-fp-visitor-id': visitorId },
+        }
       )
 
       // Validate required fields
@@ -106,11 +114,14 @@ export default function Login() {
         },
       }
 
-      // 3) Send to server for verification & storage
+      // 3) Send to server for verification & storage (include device fingerprint)
       await axios.post(
         `${API_BASE}/webauthn/register/finish`,
-        { email, attestationResponse },
-        { withCredentials: true }
+        { email, attestationResponse, fpVisitorId: visitorId },
+        { 
+          withCredentials: true,
+          headers: { 'x-fp-visitor-id': visitorId },
+        }
       )
       toast.success('Passkey registered for this device')
     } catch (err: any) {
@@ -144,11 +155,20 @@ export default function Login() {
     setLoading(true)
     try {
       if (!email) return toast.error('Enter email')
+
+      // Get device fingerprint for device binding
+      const fp = await fpPromise
+      const result = await fp.get()
+      const visitorId = result.visitorId
+
       // 1) Get auth options
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/login/start`,
         { email },
-        { withCredentials: true }
+        { 
+          withCredentials: true,
+          headers: { 'x-fp-visitor-id': visitorId },
+        }
       )
 
       options.challenge = base64urlToBuf(options.challenge)
@@ -177,8 +197,11 @@ export default function Login() {
 
       const { data } = await axios.post(
         `${API_BASE}/webauthn/login/finish`,
-        { email, assertionResponse },
-        { withCredentials: true }
+        { email, assertionResponse, fpVisitorId: visitorId },
+        { 
+          withCredentials: true,
+          headers: { 'x-fp-visitor-id': visitorId },
+        }
       )
 
       if (data?.verified) {
