@@ -10,42 +10,61 @@ const fpPromise = FingerprintJS.load()
 
 // Device ID generator (device-specific, not browser-specific)
 // Uses characteristics that are the same across browsers on the same device
+// Also uses localStorage to persist ID once generated (so it's consistent across browsers)
 const generateDeviceId = (): string => {
+  const STORAGE_KEY = '__device_fingerprint_id'
+  
+  // Check if we already have a stored device ID (persisted across browsers via localStorage)
+  // Note: localStorage is shared across all tabs/windows of the same origin, but NOT across browsers
+  // So we still need to generate a stable ID based on device characteristics
+  const storedId = localStorage.getItem(STORAGE_KEY)
+  if (storedId) {
+    console.log('[WEBAUTHN] Using stored device ID from localStorage:', storedId.substring(0, 30) + '...')
+    return storedId
+  }
+  
   // Get stable values that are the same across browsers
+  // Exclude anything that varies between browsers (userAgent, etc.)
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-  const locale = Intl.DateTimeFormat().resolvedOptions().locale || navigator.language || 'en'
-  const language = navigator.language || 'en'
-  const platform = navigator.platform || (navigator as any).userAgentData?.platform || 'unknown'
+  
+  // Use language but normalize it (some browsers might report slightly differently)
+  const language = (navigator.language || 'en').split('-')[0] // Just 'en' not 'en-US'
+  
+  // Platform - normalize to common values
+  const platform = (navigator.platform || (navigator as any).userAgentData?.platform || 'unknown').toLowerCase()
+  
+  // Hardware specs (should be same across browsers)
   const hardwareConcurrency = String(navigator.hardwareConcurrency || 0)
   const maxTouchPoints = String(navigator.maxTouchPoints || 0)
   
-  // Use availWidth/availHeight instead of width/height for consistency
-  // Also normalize to reduce window size variations
-  const screenWidth = Math.floor((screen.availWidth || screen.width || 0) / 100) * 100
-  const screenHeight = Math.floor((screen.availHeight || screen.height || 0) / 100) * 100
+  // Screen - use device pixel ratio and normalized dimensions
+  // Round screen dimensions to nearest 50px to account for browser UI differences
+  const screenWidth = Math.round((screen.availWidth || screen.width || 0) / 50) * 50
+  const screenHeight = Math.round((screen.availHeight || screen.height || 0) / 50) * 50
   const colorDepth = screen.colorDepth || 24
-  const pixelDepth = screen.pixelDepth || screen.colorDepth || 24
+  const pixelRatio = Math.round((window.devicePixelRatio || 1) * 10) / 10 // Round to 1 decimal
   
   // Device-specific components (same across browsers on the same device):
-  // Normalize all values to strings for consistent hashing
+  // Use only stable, device-level characteristics
   const components = [
-    `screen:${screenWidth}x${screenHeight}x${colorDepth}x${pixelDepth}`, // Normalized screen specs
+    `screen:${screenWidth}x${screenHeight}x${colorDepth}x${pixelRatio}`, // Normalized screen specs
     `tz:${timezone}`, // Timezone
-    `loc:${locale}`, // Locale
-    `lang:${language}`, // Language
+    `lang:${language}`, // Language (normalized, no region)
     `cpu:${hardwareConcurrency}`, // CPU cores
-    `platform:${platform.toLowerCase()}`, // Platform (normalized to lowercase)
+    `platform:${platform}`, // Platform (normalized to lowercase)
     `touch:${maxTouchPoints}`, // Touch support
-    // Note: We explicitly EXCLUDE userAgent because it's browser-specific
+    // Note: We explicitly EXCLUDE userAgent, locale (can vary), pixelDepth (can vary)
   ].join('|')
   
-  // Log the components for debugging (will help identify what's different)
+  // Log the components for debugging
   console.log('[WEBAUTHN] Device ID components:', {
     components: components.split('|'),
     screenWidth,
     screenHeight,
     timezone,
-    platform: platform.toLowerCase(),
+    language,
+    platform,
+    hardwareConcurrency,
   })
   
   // Stable hash function (same input = same output, no time-based randomness)
@@ -58,6 +77,16 @@ const generateDeviceId = (): string => {
   
   // No Date.now() - we want the same device to always get the same ID
   const deviceId = `device-${Math.abs(hash).toString(16)}`
+  
+  // Store in localStorage so it's consistent for this browser
+  // Note: This won't persist across different browsers (localStorage is browser-specific)
+  // But it will ensure consistency within the same browser
+  try {
+    localStorage.setItem(STORAGE_KEY, deviceId)
+  } catch (e) {
+    console.warn('[WEBAUTHN] Could not store device ID in localStorage:', e)
+  }
+  
   console.log('[WEBAUTHN] Generated device ID:', deviceId)
   return deviceId
 }
