@@ -48,9 +48,20 @@ export default function Login() {
 
       // Safari on iOS requires user interaction context
       // Get device fingerprint for device binding
-      const fp = await fpPromise
-      const result = await fp.get()
-      const visitorId = result.visitorId
+      let visitorId;
+      try {
+        const fp = await fpPromise
+        const result = await fp.get()
+        visitorId = result.visitorId
+        console.log('[WEBAUTHN] registerPasskey - FingerprintJS visitorId:', visitorId ? `${visitorId.substring(0, 20)}...` : 'MISSING')
+        
+        if (!visitorId) {
+          console.warn('[WEBAUTHN] registerPasskey - No visitorId from FingerprintJS, continuing without device binding')
+        }
+      } catch (fpError) {
+        console.error('[WEBAUTHN] registerPasskey - FingerprintJS error:', fpError)
+        // Continue without device fingerprint (will log warning in backend)
+      }
 
       // 1) Get registration options
       const { data: options } = await axios.post(
@@ -115,12 +126,17 @@ export default function Login() {
       }
 
       // 3) Send to server for verification & storage (include device fingerprint)
+      const registerFinishHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (visitorId) {
+        registerFinishHeaders['x-fp-visitor-id'] = visitorId
+      }
+      
       await axios.post(
         `${API_BASE}/webauthn/register/finish`,
         { email, attestationResponse, fpVisitorId: visitorId },
         { 
           withCredentials: true,
-          headers: { 'x-fp-visitor-id': visitorId },
+          headers: registerFinishHeaders,
         }
       )
       toast.success('Passkey registered for this device')
@@ -157,17 +173,33 @@ export default function Login() {
       if (!email) return toast.error('Enter email')
 
       // Get device fingerprint for device binding
-      const fp = await fpPromise
-      const result = await fp.get()
-      const visitorId = result.visitorId
+      let visitorId;
+      try {
+        const fp = await fpPromise
+        const result = await fp.get()
+        visitorId = result.visitorId
+        console.log('[WEBAUTHN] loginWithPasskey - FingerprintJS visitorId:', visitorId ? `${visitorId.substring(0, 20)}...` : 'MISSING')
+        
+        if (!visitorId) {
+          console.warn('[WEBAUTHN] loginWithPasskey - No visitorId from FingerprintJS, continuing without device binding')
+        }
+      } catch (fpError) {
+        console.error('[WEBAUTHN] loginWithPasskey - FingerprintJS error:', fpError)
+        // Continue without device fingerprint (will log warning in backend)
+      }
 
       // 1) Get auth options
+      const loginStartHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (visitorId) {
+        loginStartHeaders['x-fp-visitor-id'] = visitorId
+      }
+      
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/login/start`,
         { email },
         { 
           withCredentials: true,
-          headers: { 'x-fp-visitor-id': visitorId },
+          headers: loginStartHeaders,
         }
       )
 
@@ -195,12 +227,17 @@ export default function Login() {
         },
       }
 
+      const loginFinishHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (visitorId) {
+        loginFinishHeaders['x-fp-visitor-id'] = visitorId
+      }
+      
       const { data } = await axios.post(
         `${API_BASE}/webauthn/login/finish`,
         { email, assertionResponse, fpVisitorId: visitorId },
         { 
           withCredentials: true,
-          headers: { 'x-fp-visitor-id': visitorId },
+          headers: loginFinishHeaders,
         }
       )
 
