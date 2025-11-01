@@ -34,6 +34,19 @@ export default function Login() {
   const registerPasskey = async () => {
     try {
       if (!email) return toast.error('Enter email')
+
+      // Check WebAuthn support
+      if (!window.PublicKeyCredential) {
+        return toast.error('WebAuthn not supported in this browser')
+      }
+
+      // Check secure context (HTTPS required on iOS Safari unless localhost)
+      const isSecureContext = window.isSecureContext || location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+      if (!isSecureContext) {
+        return toast.error('HTTPS required for passkeys. Use localhost or HTTPS.')
+      }
+
+      // Safari on iOS requires user interaction context
       // 1) Get registration options
       const { data: options } = await axios.post(
         `${API_BASE}/webauthn/register/start`,
@@ -41,9 +54,22 @@ export default function Login() {
         { withCredentials: true }
       )
 
+      // Validate required fields
+      if (!options.challenge) {
+        throw new Error('Missing challenge in registration options')
+      }
+      if (!options.rp || !options.rp.id) {
+        throw new Error('Missing rp.id in registration options')
+      }
+      if (!options.user || !options.user.id) {
+        throw new Error('Missing user.id in registration options')
+      }
+
       // Convert challenge and user.id to ArrayBuffer
       options.challenge = base64urlToBuf(options.challenge)
-      if (options.user && options.user.id) options.user.id = base64urlToBuf(options.user.id)
+      if (options.user && options.user.id) {
+        options.user.id = base64urlToBuf(options.user.id)
+      }
       if (Array.isArray(options.excludeCredentials)) {
         options.excludeCredentials = options.excludeCredentials.map((cred: any) => ({
           ...cred,
@@ -51,8 +77,21 @@ export default function Login() {
         }))
       }
 
-      // 2) Create credential
+      console.log('[WEBAUTHN] Creating credential with options:', {
+        rp: options.rp,
+        user: { ...options.user, id: '[...]' },
+        challenge_length: options.challenge?.byteLength,
+        authenticatorSelection: options.authenticatorSelection,
+        pubKeyCredParams: options.pubKeyCredParams,
+        hasExtensions: !!options.extensions,
+      })
+
+      // 2) Create credential - Safari might need this called directly in user event handler
       const cred = (await navigator.credentials.create({ publicKey: options })) as PublicKeyCredential
+      
+      if (!cred || !cred.response) {
+        throw new Error('Failed to create credential - no response from authenticator')
+      }
       const attObj = (cred.response as AuthenticatorAttestationResponse).attestationObject
       const clientDataJSON = cred.response.clientDataJSON
 
@@ -75,7 +114,29 @@ export default function Login() {
       )
       toast.success('Passkey registered for this device')
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Passkey registration failed')
+      console.error('[WEBAUTHN] Registration error:', {
+        name: err?.name,
+        message: err?.message,
+        stack: err?.stack,
+        response: err?.response?.data,
+        status: err?.response?.status,
+      })
+      
+      // Handle specific Safari/WebAuthn errors
+      if (err?.name === 'NotAllowedError' || err?.message?.includes('NotAllowedError')) {
+        toast.error('Registration cancelled or not supported. Please try again.')
+      } else if (err?.name === 'InvalidStateError' || err?.message?.includes('InvalidStateError')) {
+        toast.error('A passkey for this account may already exist on this device.')
+      } else if (err?.name === 'NotSupportedError' || err?.message?.includes('NotSupportedError')) {
+        toast.error('WebAuthn not supported. Please use a modern browser.')
+      } else if (err?.name === 'SecurityError' || err?.message?.includes('SecurityError')) {
+        toast.error('Security error. Make sure you\'re using HTTPS or localhost.')
+      } else if (err?.name === 'TypeError' || err?.message?.includes('TypeError')) {
+        toast.error(`Configuration error: ${err?.message || 'Invalid options format'}`)
+      } else {
+        const errorMsg = err?.response?.data?.message || err?.response?.data?.detail || err?.message || 'Passkey registration failed'
+        toast.error(errorMsg)
+      }
     }
   }
 
