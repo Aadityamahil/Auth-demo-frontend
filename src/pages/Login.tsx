@@ -8,18 +8,23 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
 
 const fpPromise = FingerprintJS.load()
 
-// Fallback device ID generator if FingerprintJS fails
-const generateFallbackDeviceId = (): string => {
-  // Combine user agent, screen dimensions, timezone, and language
+// Device ID generator (device-specific, not browser-specific)
+// Uses characteristics that are the same across browsers on the same device
+const generateDeviceId = (): string => {
+  // Device-specific components (same across browsers on the same device):
   const components = [
-    navigator.userAgent,
-    `${screen.width}x${screen.height}`,
-    Intl.DateTimeFormat().resolvedOptions().timeZone,
-    navigator.language,
-    navigator.hardwareConcurrency || 'unknown',
+    `${screen.width}x${screen.height}x${screen.colorDepth}`, // Screen specs (device-specific)
+    Intl.DateTimeFormat().resolvedOptions().timeZone, // Timezone (device-specific)
+    Intl.DateTimeFormat().resolvedOptions().locale, // Locale (device-specific)
+    navigator.language, // Language (device-specific)
+    navigator.hardwareConcurrency || 'unknown', // CPU cores (device-specific)
+    navigator.platform || 'unknown', // Platform (OS) (device-specific)
+    navigator.maxTouchPoints || 0, // Touch support (device-specific)
+    screen.pixelDepth || screen.colorDepth, // Color depth (device-specific)
+    // Note: We explicitly EXCLUDE userAgent because it's browser-specific
   ].join('|')
   
-  // Simple hash function (not cryptographically secure, but sufficient for device binding)
+  // Stable hash function (same input = same output, no time-based randomness)
   let hash = 0
   for (let i = 0; i < components.length; i++) {
     const char = components.charCodeAt(i)
@@ -27,32 +32,21 @@ const generateFallbackDeviceId = (): string => {
     hash = hash & hash // Convert to 32-bit integer
   }
   
-  return `fallback-${Math.abs(hash).toString(16)}-${Date.now().toString(36)}`
+  // No Date.now() - we want the same device to always get the same ID
+  return `device-${Math.abs(hash).toString(16)}`
 }
 
-// Get device fingerprint with timeout and fallback
-const getDeviceFingerprint = async (timeout = 3000): Promise<string> => {
-  try {
-    // Race between FingerprintJS and timeout
-    const fingerprintPromise = fpPromise.then(fp => fp.get()).then(result => result.visitorId)
-    const timeoutPromise = new Promise<string>((_, reject) => 
-      setTimeout(() => reject(new Error('FingerprintJS timeout')), timeout)
-    )
-    
-    const visitorId = await Promise.race([fingerprintPromise, timeoutPromise])
-    
-    if (visitorId && typeof visitorId === 'string' && visitorId.length > 0) {
-      console.log('[WEBAUTHN] Device fingerprint from FingerprintJS:', visitorId.substring(0, 20) + '...')
-      return visitorId
-    }
-    
-    throw new Error('FingerprintJS returned empty visitorId')
-  } catch (error) {
-    console.warn('[WEBAUTHN] FingerprintJS failed or timed out, using fallback:', error)
-    const fallbackId = generateFallbackDeviceId()
-    console.log('[WEBAUTHN] Using fallback device ID:', fallbackId.substring(0, 20) + '...')
-    return fallbackId
-  }
+// Get device fingerprint (device-specific, works across browsers)
+const getDeviceFingerprint = async (): Promise<string> => {
+  // IMPORTANT: FingerprintJS generates browser-specific fingerprints
+  // Since we want device-specific binding (same device, different browsers = same ID),
+  // we use ONLY device-specific characteristics, NOT browser-specific ones
+  
+  // This generates the same ID across Chrome, Edge, Firefox, Safari, etc. on the same device
+  const deviceId = generateDeviceId()
+  
+  console.log('[WEBAUTHN] Device fingerprint (device-specific):', deviceId.substring(0, 30) + '...')
+  return deviceId
 }
 
 export default function Login() {
@@ -94,9 +88,9 @@ export default function Login() {
       }
 
       // Safari on iOS requires user interaction context
-      // Get device fingerprint for device binding (with fallback)
-      const visitorId = await getDeviceFingerprint(3000) // 3 second timeout
-      const regFinalVisitorId = visitorId || generateFallbackDeviceId() // Ensure we always have one
+      // Get device fingerprint for device binding (device-specific, works across browsers)
+      const visitorId = await getDeviceFingerprint()
+      const regFinalVisitorId = visitorId || generateDeviceId() // Ensure we always have one
 
       // 1) Get registration options
       const registerStartHeaders: Record<string, string> = {}
@@ -222,9 +216,9 @@ export default function Login() {
     try {
       if (!email) return toast.error('Enter email')
 
-      // Get device fingerprint for device binding (with fallback)
-      const visitorId = await getDeviceFingerprint(3000) // 3 second timeout
-      const loginFinalVisitorId = visitorId || generateFallbackDeviceId() // Ensure we always have one
+      // Get device fingerprint for device binding (device-specific, works across browsers)
+      const visitorId = await getDeviceFingerprint()
+      const loginFinalVisitorId = visitorId || generateDeviceId() // Ensure we always have one
 
       // 1) Get auth options
       const loginStartHeaders: Record<string, string> = {}
