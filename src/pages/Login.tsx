@@ -355,13 +355,14 @@ export default function Login() {
     e.preventDefault()
     setLoading(true)
     try {
+      // Get FingerprintJS visitorId for device binding (browser-specific)
       const fp = await fpPromise
       const result = await fp.get()
       const visitorId = result.visitorId
 
       const { data } = await axios.post(
         `${API_BASE}/auth/login`,
-        { email, password },
+        { email, password, fpVisitorId: visitorId },
         {
           withCredentials: true,
           headers: { 'x-fp-visitor-id': visitorId },
@@ -380,8 +381,30 @@ export default function Login() {
   const onRegister = async () => {
     if (!email || !password) return toast.error('Enter email and password')
     try {
-      await axios.post(`${API_BASE}/auth/register`, { email, password })
+      // Get FingerprintJS visitorId for device binding (browser-specific, for password login)
+      let visitorId
+      try {
+        const fp = await fpPromise
+        const result = await fp.get()
+        visitorId = result.visitorId
+        console.log('[AUTH] Register - FingerprintJS visitorId:', visitorId ? `${visitorId.substring(0, 30)}...` : 'MISSING')
+      } catch (fpError) {
+        console.warn('[AUTH] Register - FingerprintJS error:', fpError)
+        // Continue without fingerprint (will log warning in backend)
+      }
+
+      const registerHeaders: Record<string, string> = {}
+      if (visitorId) {
+        registerHeaders['x-fp-visitor-id'] = visitorId
+      }
+
+      const { data } = await axios.post(
+        `${API_BASE}/auth/register`, 
+        { email, password, fpVisitorId: visitorId },
+        { headers: registerHeaders }
+      )
       toast.success('Registered. Now login.')
+      console.log('[AUTH] Register - Response:', { deviceIdHash: data.deviceIdHash })
     } catch (err: any) {
       toast.error(err?.response?.data?.message || 'Register failed')
     }
